@@ -1,5 +1,5 @@
 import numpy as np
-
+from scipy.linalg import cho_factor, cho_solve
 
 class QuadraticProgram:
     """
@@ -134,61 +134,66 @@ class MehrotraIPMSolver:
         r_dual, r_pe, r_pi, r_cent
     ):
         """
-        Solve reduced KKT system for (dx, dlam, dz); recover ds.
-
-        We solve the standard primal dual Newton system with a bit
-        of diagonal regularization.
+        Solve reduced KKT system using Schur complement to eliminate dz and ds.
+        
+        System solved:
+        [ Q + G.T (S^-1 Z) G    A.T ] [ dx   ]   [ rhs_x ]
+        [ A                      0  ] [ dlam ] = [ rhs_e ]
         """
         Q, A, G = qp.Q, qp.A, qp.G
         n, m_e, m_i = qp.n, qp.m_e, qp.m_i
 
-        # Pure equality case: no inequalities => smaller KKT system
-        if m_i == 0:
-            K = np.block([
-                [Q + self.regularization * np.eye(n),
-                 A.T if m_e > 0 else np.zeros((n, 0))],
-                [A if m_e > 0 else np.zeros((0, n)),
-                 np.zeros((m_e, m_e))]
+        # 1. Form the "Augmented Q" matrix (Schur complement of constraints)
+        # Q_aug = Q + reg*I + G.T @ (S^-1 Z) @ G
+        # This matrix handles the curvature (Q) and the inequality barriers.
+        
+        if m_i > 0:
+            inv_s = 1.0 / (s + self.regularization)
+            phi = z * inv_s  # Diagonal elements of Z * S^-1
+            Q_aug = Q + self.regularization * np.eye(n) + G.T @ (phi[:, None] * G)
+            
+            # Modify RHS for the reduced system
+            rhs_z_term = -r_cent + z * r_pi
+            rhs_x = -r_dual - G.T @ (inv_s * rhs_z_term)
+        else:
+            # Fallback for pure equality case (no G)
+            Q_aug = Q + self.regularization * np.eye(n)
+            rhs_x = -r_dual
+            inv_s = np.zeros(0)
+
+        # 2. Solve for dx and dlam
+        if m_e == 0:
+            # Matrix is SPD, use Cholesky
+            try:
+                c, lower = cho_factor(Q_aug)
+                dx = cho_solve((c, lower), rhs_x)
+            except Exception:
+                # Fallback if regularization wasn't enough (rare)
+                dx = np.linalg.solve(Q_aug, rhs_x)
+            dlam = np.zeros(0)
+            
+        else:
+            # Matrix is Indefinite (Saddle Point), use LU (standard solve)
+            # K_aug = [ Q_aug  A^T ]
+            #         [ A      0   ]
+            K_aug = np.block([
+                [Q_aug, A.T],
+                [A, np.zeros((m_e, m_e))]
             ])
-            rhs = -np.concatenate([r_dual, r_pe])
-            sol = np.linalg.solve(K, rhs)
+            rhs_e = -r_pe
+            rhs_aug = np.concatenate([rhs_x, rhs_e])
+            
+            sol = np.linalg.solve(K_aug, rhs_aug)
             dx = sol[:n]
-            dlam = sol[n:n + m_e] if m_e > 0 else np.zeros(0)
+            dlam = sol[n:]
+
+        # 3. Recover dz and ds via back-substitution
+        if m_i > 0:
+            ds = -r_pi - G @ dx
+            dz = inv_s * (-r_cent - z * ds)
+        else:
             ds = np.zeros(0)
             dz = np.zeros(0)
-            return dx, ds, dlam, dz
-
-        # General case with inequalities
-        S = np.diag(s)
-        Z = np.diag(z)
-
-        dim = n + m_e + m_i
-        K = np.zeros((dim, dim))
-        rhs = np.zeros(dim)
-
-        # Q block
-        K[:n, :n] = Q + self.regularization * np.eye(n)
-
-        # Equality blocks
-        if m_e > 0:
-            K[:n, n:n + m_e] = A.T
-            K[n:n + m_e, :n] = A
-
-        # Inequality blocks
-        K[:n, n + m_e:] = G.T
-        K[n + m_e:, :n] = -Z @ G
-        K[n + m_e:, n + m_e:] = S + self.regularization * np.eye(m_i)
-
-        rhs[:n] = -r_dual
-        rhs[n:n + m_e] = -r_pe
-        rhs[n + m_e:] = -r_cent + Z @ r_pi
-
-        sol = np.linalg.solve(K, rhs)
-
-        dx = sol[:n]
-        dlam = sol[n:n + m_e] if m_e > 0 else np.zeros(0)
-        dz = sol[n + m_e:]
-        ds = -r_pi - G @ dx
 
         return dx, ds, dlam, dz
 
