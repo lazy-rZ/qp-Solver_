@@ -3,121 +3,105 @@ import numpy as np
 
 class QuadraticProgram:
     """
-    Convex quadratic program in the form:
+    ## Convex quadratic program:
 
-        minimize   0.5 * x^T Q x + c^T x
+        minimize   0.5 x^T Q x + c^T x
         subject to A x = b
                    G x <= h
 
-    Internally, we handle inequalities with slacks s >= 0:
+    ## Inequalities are handled with slacks s >= 0:
         G x + s = h
     """
 
     def __init__(self, Q, c, A=None, b=None, G=None, h=None):
         Q = np.atleast_2d(np.array(Q, dtype=float))
         c = np.atleast_1d(np.array(c, dtype=float))
-
         n = c.size
         if Q.shape != (n, n):
-            raise ValueError("Q must have shape (n, n) with n = len(c)")
+            raise ValueError("Q must be (n, n) with n = len(c)")
+        self.Q, self.c, self.n = Q, c, n
 
-        self.Q = Q
-        self.c = c
-        self.n = n
-
-        # Equalities: A x = b
+        # Equalities
         if A is not None:
             A = np.atleast_2d(np.array(A, dtype=float))
             b = np.atleast_1d(np.array(b, dtype=float))
             if A.shape[0] != b.size or A.shape[1] != n:
-                raise ValueError("A must be (m_e, n) and b must have length m_e")
-            self.A = A
-            self.b = b
-        else:
-            self.A = None
-            self.b = None
+                raise ValueError("A must be (m_e, n) and b length m_e")
+        self.A = A
+        self.b = b if A is not None else None
 
-        # Inequalities: G x <= h
+        # Inequalities
         if G is not None:
             G = np.atleast_2d(np.array(G, dtype=float))
             h = np.atleast_1d(np.array(h, dtype=float))
             if G.shape[0] != h.size or G.shape[1] != n:
-                raise ValueError("G must be (m_i, n) and h must have length m_i")
-            self.G = G
-            self.h = h
-        else:
-            self.G = None
-            self.h = None
+                raise ValueError("G must be (m_i, n) and h length m_i")
+        self.G = G
+        self.h = h if G is not None else None
 
         self.m_e = 0 if self.A is None else self.A.shape[0]
         self.m_i = 0 if self.G is None else self.G.shape[0]
 
 
-class PrimalDualInteriorPointSolver:
+class MehrotraIPMSolver:
     """
-    Primal-dual interior-point method for convex QPs.
-
-    Solves:
-
-        minimize   0.5 * x^T Q x + c^T x
-        subject to A x = b
-                   G x <= h
-
-    using a (short-step style) primal-dual interior-point method with
-    barrier parameter mu and centering parameter sigma.
+    ## Primal dual interior-point method with Mehrotra predictor corrector.
     """
 
-    def __init__(self, max_iter=50, tol=1e-8, sigma=0.5, verbose=True):
+    def __init__(
+        self,
+        max_iter=50,
+        tol=1e-8,
+        mu_tol=None,
+        verbose=False,
+        eta=0.99,
+        regularization=1e-9,
+    ):
         """
         Parameters
         ----------
         max_iter : int
-            Maximum number of Newton (IPM) iterations.
+            Maximum IPM iterations.
         tol : float
-            Tolerance on residuals and complementarity.
-        sigma : float in (0, 1)
-            Centering parameter for the perturbed complementarity:
-                S z ≈ sigma * mu * 1
+            Tolerance on KKT residuals (∞-norm).
+        mu_tol : float or None
+            Tolerance on complementarity; if None, uses tol.
         verbose : bool
-            If True, print iteration diagnostics.
+            Print iteration log if True.
+        eta : float
+            Fraction-to-boundary parameter in (0, 1), e.g. 0.9–0.995.
+        regularization : float
+            Small diagonal regularization on KKT blocks.
         """
         self.max_iter = max_iter
-        self.tol = tol
-        self.sigma = sigma
+        self.tol = float(tol)
+        self.mu_tol = float(mu_tol) if mu_tol is not None else float(tol)
         self.verbose = verbose
+        self.eta = float(eta)
+        self.regularization = float(regularization)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def _norm_inf(v):
-        v = np.asarray(v)
-        return 0.0 if v.size == 0 else np.linalg.norm(v, np.inf)
+        v = np.linalg.norm(np.asarray(v).ravel(), np.inf) if np.size(v) else 0.0
+        return float(v)
 
     def _initial_point(self, qp: QuadraticProgram):
-        """
-        Heuristic strictly-feasible-ish starting point (x, s, lambda, z).
-
-        - x: least-squares solution for A x = b (if equalities)
-        - s: h - G x shifted to be strictly positive
-        - z: positive duals for inequalities
-        - lambda: zeros for equalities
-        """
+        """Infeasible-start, but interior w.r.t. inequalities."""
         n, m_e, m_i = qp.n, qp.m_e, qp.m_i
+        Q, c, A, b, G, h = qp.Q, qp.c, qp.A, qp.b, qp.G, qp.h
 
-        # Start from x = 0 or least-squares equality solution
+        # x: LS solution of A x = b or zero
         if m_e > 0:
-            # Minimize ||A x - b|| in least squares sense
-            x, *_ = np.linalg.lstsq(qp.A, qp.b, rcond=None)
+            x, *_ = np.linalg.lstsq(A, b, rcond=None)
         else:
             x = np.zeros(n)
+        x = x.reshape(-1)
 
-        # Inequality slacks and duals
+        # s, z for inequalities
         if m_i > 0:
-            G, h = qp.G, qp.h
             s = h - G @ x
-            # Make sure s > 0
-            min_s = np.min(s)
+            # Shift to make slacks strictly positive
+            min_s = float(s.min())
             if min_s <= 0:
                 s += (1.0 - min_s)
             z = np.ones_like(s)
@@ -125,196 +109,217 @@ class PrimalDualInteriorPointSolver:
             s = np.zeros(0)
             z = np.zeros(0)
 
-        # Equality duals
         lam = np.zeros(m_e)
-
         return x, s, lam, z
 
-    def _residuals_primal_dual(self, qp: QuadraticProgram, x, s, lam, z):
-        """
-        Unperturbed KKT residuals:
-
-            r_dual = Q x + c + A^T lambda + G^T z
-            r_pe   = A x - b
-            r_pi   = G x + s - h
-        """
+    def _residuals(self, qp: QuadraticProgram, x, s, lam, z):
+        """KKT residuals except complementarity."""
         Q, c, A, b, G, h = qp.Q, qp.c, qp.A, qp.b, qp.G, qp.h
 
-        # Dual residual
         r_dual = Q @ x + c
         if A is not None:
             r_dual += A.T @ lam
-        if G is not None:
+        if G is not None and z.size:
             r_dual += G.T @ z
 
-        # Primal equality residual
-        if A is not None:
-            r_pe = A @ x - b
-        else:
-            r_pe = np.zeros(0)
-
-        # Primal inequality residual
-        if G is not None:
-            r_pi = G @ x + s - h
-        else:
-            r_pi = np.zeros(0)
+        r_pe = A @ x - b if A is not None else np.zeros(0)
+        r_pi = G @ x + s - h if G is not None else np.zeros(0)
 
         return r_dual, r_pe, r_pi
 
-    def _newton_step(self, qp: QuadraticProgram, x, s, lam, z, sigma, mu):
+
+    def _kkt_solve(
+        self, qp: QuadraticProgram,
+        x, s, lam, z,
+        r_dual, r_pe, r_pi, r_cent
+    ):
         """
-        Compute the Newton step (dx, ds, dlam, dz) for the perturbed KKT system:
+        Solve reduced KKT system for (dx, dlam, dz); recover ds.
 
-            r_dual(x,lambda,z) = 0
-            r_pe(x)            = 0
-            r_pi(x,s)          = 0
-            S z - sigma * mu * 1 = 0
-
-        using the standard primal–dual interior-point formulation.
-
-        We eliminate ds using r_pi, then solve a reduced KKT system
-        for (dx, dlam, dz), and finally recover ds.
+        We solve the standard primal dual Newton system with a bit
+        of diagonal regularization.
         """
-        Q, c, A, b, G, h = qp.Q, qp.c, qp.A, qp.b, qp.G, qp.h
+        Q, A, G = qp.Q, qp.A, qp.G
         n, m_e, m_i = qp.n, qp.m_e, qp.m_i
 
-        r_dual, r_pe, r_pi = self._residuals_primal_dual(qp, x, s, lam, z)
+        # Pure equality case: no inequalities => smaller KKT system
+        if m_i == 0:
+            K = np.block([
+                [Q + self.regularization * np.eye(n),
+                 A.T if m_e > 0 else np.zeros((n, 0))],
+                [A if m_e > 0 else np.zeros((0, n)),
+                 np.zeros((m_e, m_e))]
+            ])
+            rhs = -np.concatenate([r_dual, r_pe])
+            sol = np.linalg.solve(K, rhs)
+            dx = sol[:n]
+            dlam = sol[n:n + m_e] if m_e > 0 else np.zeros(0)
+            ds = np.zeros(0)
+            dz = np.zeros(0)
+            return dx, ds, dlam, dz
 
-        if m_i > 0:
-            e = np.ones(m_i)
-            # Perturbed complementarity residual: S z - sigma * mu * 1
-            r_cent = s * z - sigma * mu * e
-            S = np.diag(s)
-            Z = np.diag(z)
-        else:
-            r_cent = np.zeros(0)
-            S = np.zeros((0, 0))
-            Z = np.zeros((0, 0))
-
-        # We solve for (dx, dlam, dz) in the reduced KKT system:
-        #
-        #   Q dx + A^T dlam + G^T dz = -r_dual
-        #   A dx                    = -r_pe
-        #  -Z G dx           + S dz = -r_cent + Z r_pi
-        #
-        # then recover ds from:
-        #
-        #   G dx + ds = -r_pi  => ds = -r_pi - G dx
+        # General case with inequalities
+        S = np.diag(s)
+        Z = np.diag(z)
 
         dim = n + m_e + m_i
         K = np.zeros((dim, dim))
         rhs = np.zeros(dim)
 
-        # Row/col layout: [x (n), lambda (m_e), z (m_i)]
-
         # Q block
-        K[0:n, 0:n] = Q
+        K[:n, :n] = Q + self.regularization * np.eye(n)
 
-        # A blocks
+        # Equality blocks
         if m_e > 0:
-            K[0:n, n:n + m_e] = A.T
-            K[n:n + m_e, 0:n] = A
+            K[:n, n:n + m_e] = A.T
+            K[n:n + m_e, :n] = A
 
-        # G & (S,Z) blocks (inequalities)
-        if m_i > 0:
-            # Top-right block: G^T for z
-            K[0:n, n + m_e:n + m_e + m_i] = G.T
-            # Bottom-left block: -Z G
-            K[n + m_e:n + m_e + m_i, 0:n] = -Z @ G
-            # Bottom-right block: S
-            K[n + m_e:n + m_e + m_i, n + m_e:n + m_e + m_i] = S
+        # Inequality blocks
+        K[:n, n + m_e:] = G.T
+        K[n + m_e:, :n] = -Z @ G
+        K[n + m_e:, n + m_e:] = S + self.regularization * np.eye(m_i)
 
-        # RHS
-        rhs[0:n] = -r_dual
-        if m_e > 0:
-            rhs[n:n + m_e] = -r_pe
-        if m_i > 0:
-            rhs[n + m_e:n + m_e + m_i] = -r_cent + Z @ r_pi
+        rhs[:n] = -r_dual
+        rhs[n:n + m_e] = -r_pe
+        rhs[n + m_e:] = -r_cent + Z @ r_pi
 
-        # Solve KKT system
-        try:
-            sol = np.linalg.solve(K, rhs)
-        except np.linalg.LinAlgError as exc:
-            raise RuntimeError("KKT system is singular or ill-conditioned.") from exc
+        sol = np.linalg.solve(K, rhs)
 
-        dx = sol[0:n]
-        dlam = sol[n:n + m_e]
-        dz = sol[n + m_e:n + m_e + m_i]
+        dx = sol[:n]
+        dlam = sol[n:n + m_e] if m_e > 0 else np.zeros(0)
+        dz = sol[n + m_e:]
+        ds = -r_pi - G @ dx
 
-        # Recover ds from G dx + ds = -r_pi
-        if m_i > 0:
-            ds = -r_pi - qp.G @ dx
-        else:
-            ds = np.zeros(0)
+        return dx, ds, dlam, dz
 
-        return dx, ds, dlam, dz, r_dual, r_pe, r_pi, r_cent
+    def _fraction_to_boundary(self, s, ds, z, dz):
+        """Largest step preserving positivity of s,z times eta."""
+        alpha_pri = 1.0
+        alpha_dual = 1.0
 
-    # ------------------------------------------------------------------
-    # Main solve
-    # ------------------------------------------------------------------
+        if s.size:
+            idx = ds < 0
+            if np.any(idx):
+                alpha_pri = min(alpha_pri,
+                                self.eta * np.min(-s[idx] / ds[idx]))
+
+        if z.size:
+            idx = dz < 0
+            if np.any(idx):
+                alpha_dual = min(alpha_dual,
+                                 self.eta * np.min(-z[idx] / dz[idx]))
+
+        return float(alpha_pri), float(alpha_dual)
+
     def solve(self, qp: QuadraticProgram):
         """
-        Solve the given QP with a primal–dual interior-point method.
+        Solve the QP and return (x, s, lambda, z, info).
 
-        Returns
-        -------
-        x, s, lambda, z : np.ndarray
-            Primal variables x, inequality slacks s, duals for equalities lambda,
-            duals for inequalities z.
+        info is a dict with iteration history + termination status.
         """
         x, s, lam, z = self._initial_point(qp)
         n, m_e, m_i = qp.n, qp.m_e, qp.m_i
 
-        for k in range(self.max_iter):
-            # Compute residuals and barrier parameter mu
-            r_dual, r_pe, r_pi = self._residuals_primal_dual(qp, x, s, lam, z)
+        history = {
+            "res_dual": [],
+            "res_pri_eq": [],
+            "res_pri_in": [],
+            "mu": [],
+        }
 
+        for k in range(self.max_iter):
+            r_dual, r_pe, r_pi = self._residuals(qp, x, s, lam, z)
+
+            # Complementarity bits
             if m_i > 0:
-                mu = (s @ z) / m_i
-                comp = self._norm_inf(s * z)
+                mu = float(s @ z / m_i)
+                r_cent = s * z
             else:
                 mu = 0.0
-                comp = 0.0
+                r_cent = np.zeros(0)
 
-            # Diagnostics
             nd = self._norm_inf(r_dual)
             npe = self._norm_inf(r_pe)
             npi = self._norm_inf(r_pi)
+            ncent = self._norm_inf(r_cent)
+
+            history["res_dual"].append(nd)
+            history["res_pri_eq"].append(npe)
+            history["res_pri_in"].append(npi)
+            history["mu"].append(mu)
 
             if self.verbose:
                 print(
-                    f"iter {k:02d} | "
-                    f"r_dual = {nd:.2e}, "
-                    f"r_pe = {npe:.2e}, "
-                    f"r_pi = {npi:.2e}, "
-                    f"comp = {comp:.2e}, "
-                    f"mu = {mu:.2e}"
+                    f"iter {k:2d}: "
+                    f"||r_dual||={nd:.2e}, "
+                    f"||r_pe||={npe:.2e}, "
+                    f"||r_pi||={npi:.2e}, "
+                    f"mu={mu:.2e}"
                 )
 
-            # Stopping criterion (basic but reasonable):
-            if max(nd, npe, npi, comp, mu) < self.tol:
+            # Termination condition
+            if max(nd, npe, npi) < self.tol and mu < self.mu_tol:
+                status = "optimal"
                 break
 
-            # Compute Newton step for current sigma, mu
-            dx, ds, dlam, dz, _, _, _, _ = self._newton_step(
-                qp, x, s, lam, z, self.sigma, mu
-            )
+            if m_i == 0:
+                # Equality-only QP: single Newton step
+                dx, ds, dlam, dz = self._kkt_solve(
+                    qp, x, s, lam, z, r_dual, r_pe, r_pi, r_cent
+                )
+                alpha_pri = alpha_dual = 1.0
+            else:
+                # Predictor (affine-scaling) step 
+                r_cent_aff = r_cent # sigma = 0
+                dx_aff, ds_aff, dlam_aff, dz_aff = self._kkt_solve(
+                    qp, x, s, lam, z, r_dual, r_pe, r_pi, r_cent_aff
+                )
 
-            # Step length to keep s > 0, z > 0
-            alpha = 1.0
-            if m_i > 0:
-                idx = ds < 0
-                if np.any(idx):
-                    alpha = min(alpha, 0.99 * np.min(-s[idx] / ds[idx]))
+                # Fraction-to-boundary for affine step
+                alpha_aff_pri, alpha_aff_dual = self._fraction_to_boundary(
+                    s, ds_aff, z, dz_aff
+                )
+                if alpha_aff_pri < 1e-10 or alpha_aff_dual < 1e-10:
+                    status = "numerical_issue"
+                    break
 
-                idx = dz < 0
-                if np.any(idx):
-                    alpha = min(alpha, 0.99 * np.min(-z[idx] / dz[idx]))
+                # Affine complementarity
+                mu_aff = ((s + alpha_aff_pri * ds_aff)
+                          @ (z + alpha_aff_dual * dz_aff)) / max(1, m_i)
 
-            # Update variables
+                # Mehrotra sigma
+                sigma = (mu_aff / mu) ** 3 if mu > 0 else 0.0
+                sigma = float(np.clip(sigma, 0.0, 1.0))
+
+                # Corrector (with sigma and second order) 
+                r_cent_corr = s * z + ds_aff * dz_aff - sigma * mu * np.ones(m_i)
+
+                dx, ds, dlam, dz = self._kkt_solve(
+                    qp, x, s, lam, z, r_dual, r_pe, r_pi, r_cent_corr
+                )
+
+                alpha_pri, alpha_dual = self._fraction_to_boundary(
+                    s, ds, z, dz
+                )
+
+            alpha = min(alpha_pri, alpha_dual)
+            if alpha <= 0:
+                status = "numerical_issue"
+                break
+
+            # Update
             x = x + alpha * dx
-            s = s + alpha * ds
             lam = lam + alpha * dlam
-            z = z + alpha * dz
+            if m_i > 0:
+                s = s + alpha * ds
+                z = z + alpha * dz
 
-        return x, s, lam, z
+        else:
+            status = "max_iter_exceeded"
+
+        info = {
+            "status": status,
+            "iterations": len(history["mu"]),
+            "history": history,
+        }
+        return x, s, lam, z, info
