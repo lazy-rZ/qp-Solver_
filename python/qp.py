@@ -143,7 +143,7 @@ class MehrotraIPMSolver:
         Q, A, G = qp.Q, qp.A, qp.G
         n, m_e, m_i = qp.n, qp.m_e, qp.m_i
 
-        # 1. Form the "Augmented Q" matrix (Schur complement of constraints)
+        # Form the "Augmented Q" matrix (Schur complement of constraints)
         # Q_aug = Q + reg*I + G.T @ (S^-1 Z) @ G
         # This matrix handles the curvature (Q) and the inequality barriers.
         
@@ -161,7 +161,7 @@ class MehrotraIPMSolver:
             rhs_x = -r_dual
             inv_s = np.zeros(0)
 
-        # 2. Solve for dx and dlam
+        # Solve for dx and dlam
         if m_e == 0:
             # Matrix is SPD, use Cholesky
             try:
@@ -187,7 +187,7 @@ class MehrotraIPMSolver:
             dx = sol[:n]
             dlam = sol[n:]
 
-        # 3. Recover dz and ds via back-substitution
+        # Recover dz and ds via back-substitution
         if m_i > 0:
             ds = -r_pi - G @ dx
             dz = inv_s * (-r_cent - z * ds)

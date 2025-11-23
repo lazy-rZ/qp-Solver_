@@ -1,283 +1,258 @@
+# Quadratic Programming Solver — Documentation
 
-# Quadratic Program (QP) Interior-Point Solver  
-### *Documentation of Implementation*
+This module implements a convex quadratic programming (QP) solver using a **primal–dual interior-point method** with **Mehrotra’s predictor–corrector algorithm**.  
+It includes:
 
----
-
-# 1. Problem Definition
-
-We want to solve a **convex quadratic program**:
-
-$$
-\begin{aligned}
-\min_x \quad & \frac12 x^T Q x + c^T x \\
-\text{s.t.} \quad & A x = b \\
-                  & G x \le h
-\end{aligned}
-$$
-
-Where:
-
-- $ Q \in \mathbb{R}^{n \times n} $ is **positive semidefinite**
-- $ c \in \mathbb{R}^n $
-- $ A \in \mathbb{R}^{m_e \times n} $
-- $ G \in \mathbb{R}^{m_i \times n} $
+- `QuadraticProgram` – a container for QP data  
+- `MehrotraIPMSolver` – the optimization solver  
 
 ---
 
-# 2. Slack Variables
+# 1. Problem Formulation
 
-Convert inequalities:
+The solver handles problems of the form:
 
-$$
-Gx \le h
-$$
+```
+minimize    0.5 * x^T Q x + c^T x
+subject to  A x = b
+            G x <= h
+```
 
-into equalities using slacks:
+Inequality constraints are rewritten with slack variables `s >= 0`:
 
-$$
-Gx + s = h, \quad s \ge 0
-$$
+```
+G x + s = h
+```
 
 Dual variables:
 
-- $\lambda$: equalities
-- $z$: inequalities
+- `lambda` for equalities  
+- `z >= 0` for inequalities  
 
 ---
 
-# 3. KKT Optimality Conditions
+# 2. QuadraticProgram Class
 
-Optimal solution $(x^*, s^*, \lambda^*, z^*)$:
+### Constructor
 
-### 1. Stationarity
-$$
-Qx + c + A^T\lambda + G^T z = 0
-$$
+```python
+QuadraticProgram(Q, c, A=None, b=None, G=None, h=None)
+```
 
-### 2. Feasibility
-$$
-A x = b, \quad Gx + s = h
-$$
+This class stores and validates all QP data.
 
-### 3. Complementarity
-$$
-s_i z_i = 0
-$$
+### Stored Attributes
 
-Interior-point methods relax this:
+| Attribute | Description |
+|----------|-------------|
+| `Q` | Hessian matrix (n × n) |
+| `c` | Linear term (n) |
+| `A` | Equality constraint matrix (m_e × n) |
+| `b` | Equality constraint RHS (m_e) |
+| `G` | Inequality constraint matrix (m_i × n) |
+| `h` | Inequality constraint RHS (m_i) |
+| `m_e` | Number of equality constraints |
+| `m_i` | Number of inequality constraints |
 
-$$
-s_i z_i = \mu
-$$
+### Validation Performed
 
-where:
-
-$$
-\mu = \frac{s^T z}{m_i}
-$$
+- `Q` must be square and match `len(c)`
+- If provided, `A` shape must match `b`
+- If provided, `G` shape must match `h`
 
 ---
 
-# 4. Newton System
+# 3. MehrotraIPMSolver Class
 
-Linearize KKT conditions and solve:
+A primal–dual interior-point solver implementing Mehrotra’s predictor–corrector algorithm.
 
-$$
-(dx, ds, d\lambda, dz)
-$$
+### Initialization
 
-Reduced Newton system:
+```python
+MehrotraIPMSolver(
+    max_iter=50,
+    tol=1e-8,
+    mu_tol=None,
+    verbose=False,
+    eta=0.99,
+    regularization=1e-9
+)
+```
 
-$$
-\begin{bmatrix}
-Q & A^T & G^T \\
-A & 0 & 0 \\
--ZG & 0 & S
-\end{bmatrix}
-\begin{bmatrix}
-dx \\ d\lambda \\ dz
-\end{bmatrix}
-=
-\begin{bmatrix}
--r_{dual} \\ -r_{pe} \\ -r_{cent} + Z r_{pi}
-\end{bmatrix}
-$$
+### Parameters
 
-This is the system solved in the implementation.
-
----
-
-# 5. Mehrotra Predictor–Corrector Algorithm
-
-IPM workflow:
+- **max_iter**: Maximum iterations  
+- **tol**: Tolerance for KKT residuals  
+- **mu_tol**: Complementarity tolerance (defaults to `tol`)  
+- **verbose**: Print iteration logs  
+- **eta**: Fraction-to-boundary parameter (0 < eta < 1)  
+- **regularization**: Small diagonal stabilization term  
 
 ---
 
-## Step 1 — Compute residuals
+# 4. Algorithm Overview
 
-- Dual:  
-  `r_dual = Qx + c + Aᵀλ + Gᵀz`
-- Equality:  
-  `r_pe = Ax - b`
-- Inequality:  
-  `r_pi = Gx + s - h`
-- Complementarity:  
-  `r_cent = s * z`
+The solver uses standard primal–dual interior-point steps:
 
----
+### Residuals
 
-## Step 2 — Predictor Step (σ = 0)
+- **Dual residual**: `Qx + c + A^T lam + G^T z`
+- **Primal equality residual**: `A x - b`
+- **Primal inequality residual**: `G x + s - h`
+- **Complementarity residual**: `s * z`
 
-Solve Newton system → affine-scaling step:
-
-$$
-(dx_{aff}, ds_{aff}, d\lambda_{aff}, dz_{aff})
-$$
-
-Compute full step length keeping $s > 0, z > 0$:
-
-$$
-\alpha_{aff}
-$$
-
-Estimate new complementarity:
-
-$$
-\mu_{aff} = \frac{(s+\alpha ds)^T(z+\alpha dz)}{m_i}
-$$
-
----
-
-## Step 3 — Compute σ
-
-$$
-\sigma = (\mu_{aff}/\mu)^3
-$$
-
-Key Mehrotra heuristic.
-
----
-
-## Step 4 — Corrector Step
-
-Correct complementarity for second-order effects:
-
-$$
-r_{cent\_corr} = s z + ds_{aff} dz_{aff} - \sigma \mu
-$$
-
-Solve Newton system again.
-
----
-
-## Step 5 — Fraction-to-boundary step size
-
-$$
-\alpha = \eta \cdot \min\{ \alpha_{pri}, \alpha_{dual} \}
-$$
-
-with $ \eta = 0.99 $.
-
----
-
-## Step 6 — Update
-
-$$
-x \leftarrow x + \alpha dx
-$$
-$$
-s \leftarrow s + \alpha ds
-$$
-$$
-\lambda \leftarrow \lambda + \alpha d\lambda
-$$
-$$
-z \leftarrow z + \alpha dz
-$$
-
----
-
-# 6. Pseudocode
+Complementarity measure:
 
 ```
-function solve_qp(Q, c, A, b, G, h):
-
-    initialize x, s > 0, λ, z > 0
-
-    for k in 1..max_iter:
-
-        compute residuals
-        compute µ = (sᵀ z)/m_i
-
-        if residuals < tol and µ < tol:
-            return solution
-
-        # Predictor step (σ = 0)
-        solve Newton system → (dx_aff, ds_aff, dλ_aff, dz_aff)
-        compute α_aff
-        compute μ_aff
-        σ = (μ_aff / μ)^3
-
-        # Corrector step
-        build corrected complementarity residual
-        solve Newton system → (dx, ds, dλ, dz)
-
-        compute α_pri, α_dual
-        α = η * min(α_pri, α_dual)
-
-        update x, s, λ, z
-
-    return failure
+mu = sum(s * z) / m_i
 ```
 
 ---
 
-# 7. KKT Matrix Structure
+# 5. Predictor Step
 
-$$
-K =
-\begin{bmatrix}
-Q + δI & A^T & G^T \\
-A & 0 & 0 \\
--ZG & 0 & S + δI
-\end{bmatrix}
-$$
+Computes a direction assuming no centering correction.  
+Determines how far the step can go before violating positivity of `s` and `z`.
 
-Where:
+```
+alpha_aff_pri  = max step until s stays >= 0
+alpha_aff_dual = max step until z stays >= 0
+```
 
-- S = diag(s)
-- Z = diag(z)
-- δ = small regularization
+Predicts new complementarity:
 
----
-
-# 8. Convergence Criteria
-
-Solver stops when:
-
-$$
-\|r_{dual}\| < tol
-$$
-$$
-\|r_{pe}\| < tol
-$$
-$$
-\|r_{pi}\| < tol
-$$
-$$
-\mu < tol
-$$
+```
+mu_aff = (s + alpha_aff_pri * ds_aff) dot (z + alpha_aff_dual * dz_aff) / m_i
+```
 
 ---
 
-# 9. Verification
+# 6. Corrector Step
 
-To verify correctness:
+Computes centering parameter:
 
-### Check KKT residuals  
-### Test known solutions  
-### Check feasibility Gx≤h, Ax=b, s≥0, z≥0  
+```
+sigma = (mu_aff / mu)^3
+```
+
+Creates corrected complementarity residual:
+
+```
+r_cent_corrected = s*z + ds_aff * dz_aff - sigma * mu * 1
+```
+
+Solves KKT system again using corrected residual.
 
 ---
 
+# 7. KKT System Solve
+
+The solver forms a reduced KKT system:
+
+```
+[ Q + G^T (S^-1 Z) G    A^T ] [ dx   ] = [ rhs_x ]
+[ A                       0 ] [ dlam ]   [ rhs_e ]
+```
+
+Depending on constraints:
+
+- With no equalities → Cholesky solve  
+- Otherwise → dense linear solve
+
+Slack and dual steps (`ds`, `dz`) are recovered afterward.
+
+---
+
+# 8. Step Size Selection
+
+To maintain positivity:
+
+```
+alpha_pri  = eta * min_i( -s_i / ds_i  ) for ds_i < 0
+alpha_dual = eta * min_i( -z_i / dz_i ) for dz_i < 0
+```
+
+Final step:
+
+```
+alpha = min(alpha_pri, alpha_dual)
+```
+
+---
+
+# 9. Update
+
+```
+x   = x + alpha * dx
+lam = lam + alpha * dlam
+s   = s + alpha * ds
+z   = z + alpha * dz
+```
+
+---
+
+# 10. Termination Criteria
+
+The solver stops when:
+
+- All residuals are below tolerance `tol`
+- Complementarity `mu` is below `mu_tol`
+
+Or stops with:
+
+- `"numerical_issue"`
+- `"max_iter_exceeded"`
+
+---
+
+# 11. Solver Interface
+
+### Solve a QP
+
+```python
+x, s, lam, z, info = solver.solve(qp)
+```
+
+### Returns
+
+| Output | Description |
+|--------|-------------|
+| `x` | Primal solution |
+| `s` | Slack variables |
+| `lam` | Equality dual variables |
+| `z` | Inequality dual variables |
+| `info` | Dictionary with status, residual history, iterations |
+
+---
+
+# 12. Example
+
+```python
+import numpy as np
+from qp import QuadraticProgram, MehrotraIPMSolver
+
+Q = np.eye(2)
+c = np.array([-1.0, -1.0])
+G = np.array([[1, 2],
+              [-1, 0]])
+h = np.array([1, 0])
+
+qp = QuadraticProgram(Q, c, G=G, h=h)
+solver = MehrotraIPMSolver(verbose=True)
+
+x, s, lam, z, info = solver.solve(qp)
+
+print("Solution:", x)
+print("Status:", info["status"])
+```
+
+---
+
+# 13. Numerical Stability Features
+
+- Diagonal regularization of `Q`  
+- Regularization of slack inverses  
+- Fallback from Cholesky to general solve  
+- Fraction-to-boundary safeguard  
+
+Ensures robustness for poorly conditioned problems.
