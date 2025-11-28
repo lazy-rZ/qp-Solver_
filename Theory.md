@@ -7,7 +7,7 @@ In this document you will find all relevant theory needed to understand quadrati
 An optimization problems looks like:
 
 $$
-min_x \space f(x) \space s.t. \space x \in C
+min_x f(x), x \in C
 $$
 
 where $f(x)$ is our objective function and $C$ is a set of constraints usually descibred by equations and inequalities.
@@ -31,8 +31,9 @@ Now we can define our convex optimization problem where our objective function i
 A QP is convex optimization problem:
 
 $$
-min_x \space \frac{1}{2} x^TQx + c^Tx
+min_x \frac{1}{2} x^TQx + c^Tx
 $$
+
 subject to : $Ax=b$ and $Gx\le h$.
 
 Here Q is positive positive semidefinite meaning it $x^TQx\ge 0$ for all vectors $x$. In other words the objective function has a bowl shape and never curves downward. 
@@ -125,19 +126,25 @@ We need to modify the last equation because otherwise the system is non-smooth, 
 
 Interior-point methods replaces the Complementarity Conditions with $s_i z_i​ = μ$ where if $μ$ is large then point stays away from the boundary otherwise if $μ$ is small then point approaches the true KKT solution. So As $μ$ goes to 0, we converge to the exact KKT conditions.
 
-Now we have a system of nonlinear equations: $F(x,s,λ,z,μ)=0$ so we apply Newton’s method to compute search directions: $(dx,ds,dλ,dz)$. Consider the argument as vector $w$, then to solve $F(w)=0$, Newton’s method computes a search direction $J_f(w)dw=--f(x)$ where $J_f$ is the jacobian of all partial derivatives, our update is thus $w_{new}​=w+α*dw$, where $0<α\le 1$ is the step size.
+Now we have a system of nonlinear equations: $F(x,s,λ,z,μ)=0$ so we apply Newton’s method to compute search directions: $(dx,ds,dλ,dz)$. Consider the argument as vector $w$, then to solve $F(w)=0$, Newton’s method computes a search direction $J_f(w)dw=-f(x)$ where $J_f$ is the jacobian of all partial derivatives, our update is thus $w_{new}​=w+α*dw$, where $0<α\le 1$ is the step size.
 
 This is a huge linear system so we can use Schur complement, a technique for solving block-structured linear systems.
 
 ### Schur Complement
 
-Assume we have a system: 
-$\begin{bmatrix}A &B^T\\ B & 0 \end{bmatrix} \begin{bmatrix}x \\ y \end{bmatrix} = \begin{bmatrix}r1 \\ r2 \end{bmatrix}$
+Assume we have a system:
+
+$$
+\begin{bmatrix} A & B^T \\\ B & 0 \end{bmatrix} \begin{bmatrix} x \\\ y \end{bmatrix} = \begin{bmatrix} r1 \\\ r2 \end{bmatrix}
+$$
 
 In our case this is the structure of the KKT matrix. The trick is to solve for x using a reduced system (the Schur complement) then recover y afterward. 
 
 When you linearize the KKT system, the Newton system becomes:
-$\begin{bmatrix}(Q+G^TS^{-1}ZG) & A^T \\ A & 0 \end{bmatrix} \begin{bmatrix}dx \\ dλ \end{bmatrix} = \begin{bmatrix}rhs_x \\ rhs_λ \end{bmatrix}$
+
+$$
+\begin{bmatrix} (Q+G^TS^{-1}ZG) & A^T \\\ A & 0 \end{bmatrix} \begin{bmatrix} dx \\\ dλ \end{bmatrix} = \begin{bmatrix} rhs_x \\\ rhs_λ \end{bmatrix}
+$$
 
 Where S=diag(s), Z=diag(z), $S^{−1}Z$ comes from differentiating $sz=μ$ and rhs_x and rhs_λ come from residuals. This reduced matrix is called the augmented Hessian or the Schur complement of (S,Z). This is just a optimization trick because, the full system size $(n+m_e+m_i)^2$ where using Schur complement, we solve instead a system of size $(n + m_e)$.
 
@@ -182,8 +189,9 @@ The basic algorithm does 1 Newton step per iteration, decreasing μ each time. B
 We solve the KKT Newton system with: $sz=0$, this gives the affine scaling direction. This direction shows us where would we go if we fully removed the barrier and tried to reach the KKT solution directly. But this step tends to drive: some s → 0 and or some z → 0 Too fast.
 
 We compute how far we can go before hitting boundaries : $α_{aff}^{pri}​$ and $α_{aff}^{dual}$ and estimate the affine complementarity:
+
 $$
-μ_{aff}​=\frac{(s+α_{aff}​ds_{aff}​)^T(z+α_{aff}​dz_{aff}​)}{m}​
+μ_{aff}​ = \frac{(s + α_{aff}​ ds_{aff}​)^T (z + α_{aff} ​dz_{aff}​)}{m}​
 $$
 
 This value is usually much smaller than μ. It tells us if we followed this direction all the way, how close would we get to the actual KKT complementarity. This produces information about curvature and scaling.
